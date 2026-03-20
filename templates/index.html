@@ -1,0 +1,287 @@
+<!doctype html>
+<html lang="zh-Hant">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>關卡位置輔助程式</title>
+    <style>
+      :root {
+        --bg: #0f172a;
+        --panel: #111827;
+        --muted: #94a3b8;
+        --text: #e5e7eb;
+        --gray: #64748b;
+      }
+      * { box-sizing: border-box; }
+      body {
+        margin: 0;
+        font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+        background: linear-gradient(180deg, #020617, #0f172a);
+        color: var(--text);
+      }
+      .wrap {
+        max-width: 520px;
+        margin: 0 auto;
+        padding: 12px;
+      }
+      .card {
+        background: rgba(17, 24, 39, 0.85);
+        border: 1px solid #334155;
+        border-radius: 14px;
+        padding: 14px;
+        margin-bottom: 12px;
+      }
+
+      .palette {
+        display: grid;
+        grid-template-columns: repeat(4, 1fr);
+        gap: 10px;
+        margin-bottom: 10px;
+      }
+      .color-btn {
+        border: 2px solid #334155;
+        border-radius: 10px;
+        padding: 16px 6px;
+        cursor: pointer;
+        color: #fff;
+        font-size: 12px;
+        font-weight: 600;
+        text-align: center;
+      }
+      .color-btn.active {
+        border-color: #f8fafc;
+        filter: brightness(1.15);
+        box-shadow: 0 0 0 2px rgba(248, 250, 252, 0.2) inset;
+      }
+      .color-btn:disabled {
+        filter: grayscale(0.75) brightness(0.7);
+        cursor: not-allowed;
+      }
+      .danger {
+        width: auto;
+        border-radius: 10px;
+        border: 1px solid #dc2626;
+        background: #dc2626;
+        color: #fff;
+        padding: 8px 12px;
+        font-size: 13px;
+        cursor: pointer;
+      }
+
+      .board {
+        display: grid;
+        grid-template-columns: 56px repeat(4, 1fr);
+        gap: 6px;
+        align-items: center;
+      }
+      .head {
+        color: #cbd5e1;
+        text-align: center;
+        font-size: 12px;
+        font-weight: 600;
+      }
+      .layer-label {
+        color: #cbd5e1;
+        text-align: right;
+        padding-right: 4px;
+        font-size: 12px;
+      }
+      .cell {
+        height: 40px;
+        border-radius: 8px;
+        border: 1px solid #475569;
+        background: var(--gray);
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        font-size: 11px;
+        color: #f8fafc;
+        letter-spacing: 0.2px;
+      }
+      .pickable {
+        cursor: pointer;
+      }
+      .pickable.active {
+        outline: 2px solid #f8fafc;
+        outline-offset: 1px;
+      }
+      .status { color: var(--muted); font-size: 12px; margin-top: 8px; }
+    </style>
+  </head>
+  <body>
+    <div class="wrap">
+      <div class="card">
+        <div class="palette" id="palette"></div>
+        <button class="danger" id="clear" type="button">清空</button>
+        <div class="status" id="status">連線中...</div>
+      </div>
+
+      <div class="card">
+        <div class="board" id="board"></div>
+      </div>
+    </div>
+
+    <script>
+      const statusEl = document.getElementById("status");
+      const boardEl = document.getElementById("board");
+      const paletteEl = document.getElementById("palette");
+
+      const COLORS = [
+        "#ef4444",
+        "#22c55e",
+        "#3b82f6",
+        "#eab308",
+        "#a855f7",
+        "#f97316",
+        "#ec4899",
+        "#06b6d4",
+      ];
+
+      let selfId = "";
+      let selectedColor = null;
+      let myAnswer = Array(10).fill(null);
+      let latestBoard = [];
+      let latestPlayers = [];
+
+      const wsProtocol = location.protocol === "https:" ? "wss" : "ws";
+      const ws = new WebSocket(`${wsProtocol}://${location.host}/ws`);
+
+      ws.onopen = () => {
+        statusEl.textContent = "已連線，資料會即時同步";
+      };
+
+      ws.onclose = () => {
+        statusEl.textContent = "連線中斷，請重新整理頁面";
+      };
+
+      ws.onerror = () => {
+        statusEl.textContent = "WebSocket 發生錯誤";
+      };
+
+      ws.onmessage = (event) => {
+        const payload = JSON.parse(event.data);
+        if (payload.self_id) {
+          selfId = payload.self_id;
+        }
+        render(payload);
+      };
+
+      function send(data) {
+        if (ws.readyState !== WebSocket.OPEN) return;
+        ws.send(JSON.stringify(data));
+      }
+
+      document.getElementById("clear").addEventListener("click", () => {
+        const ok = confirm("確定要清空所有人的所有答案嗎？");
+        if (!ok) return;
+        send({ action: "clear" });
+      });
+
+      function render(payload) {
+        const players = payload.players || [];
+        latestPlayers = players;
+        latestBoard = payload.board || [];
+        const me = players.find((p) => p.id === selfId);
+        if (me) {
+          selectedColor = me.color || null;
+          myAnswer = me.answer || Array(10).fill(null);
+        }
+
+        renderPalette();
+        renderBoard(payload.board || []);
+      }
+
+      function renderPalette() {
+        paletteEl.innerHTML = "";
+        for (const color of COLORS) {
+          const owner = latestPlayers.find((p) => p.color === color);
+          const disabled = Boolean(owner && owner.id !== selfId);
+          const btn = document.createElement("button");
+          btn.type = "button";
+          btn.className = `color-btn ${selectedColor === color ? "active" : ""}`;
+          btn.style.background = color;
+          btn.disabled = disabled;
+          btn.textContent = disabled ? "被選擇" : "";
+          btn.addEventListener("click", () => {
+            if (disabled) return;
+            selectedColor = color;
+            send({ action: "set_color", color });
+            renderPalette();
+          });
+          paletteEl.appendChild(btn);
+        }
+      }
+
+      function renderBoard(board) {
+        boardEl.innerHTML = "";
+
+        boardEl.appendChild(cell("", "head"));
+        for (let pos = 1; pos <= 4; pos++) {
+          boardEl.appendChild(cell(`位置 ${pos}`, "head"));
+        }
+
+        for (let layer = 9; layer >= 0; layer--) {
+          boardEl.appendChild(cell(`第 ${layer + 1} 層`, "layer-label"));
+
+          for (let pos = 0; pos < 4; pos++) {
+            const users = board[layer]?.[pos] || [];
+            const c = document.createElement("div");
+            const mineSelected = myAnswer?.[layer] === pos + 1;
+            c.className = `cell pickable ${mineSelected ? "active" : ""}`;
+            if (users.length === 0) {
+              c.style.background = "#64748b";
+              c.textContent = "-";
+            } else if (users.length === 1) {
+              c.style.background = users[0].color;
+              //c.textContent = "1 人";
+            } else {
+              const step = 100 / users.length;
+              const segments = users
+                .map((u, i) => `${u.color} ${Math.floor(i * step)}% ${Math.floor((i + 1) * step)}%`)
+                .join(",");
+              c.style.background = `linear-gradient(135deg, ${segments})`;
+              c.textContent = `${users.length} 人`;
+            }
+            c.title = `第 ${layer + 1} 層，位置 ${pos + 1}`;
+            c.addEventListener("click", () => {
+              handlePick(layer, pos + 1);
+            });
+            boardEl.appendChild(c);
+          }
+        }
+      }
+
+      function handlePick(layer, position) {
+        if (!selectedColor) {
+          alert("請先選擇顏色");
+          return;
+        }
+
+        if (myAnswer?.[layer] === position) {
+          send({ action: "unpick", layer });
+          return;
+        }
+
+        const users = latestBoard?.[layer]?.[position - 1] || [];
+        const occupiedByOthers = users.some((u) => u.id !== selfId);
+
+        if (occupiedByOthers) {
+          const ok = confirm("這格已有人選擇，確認要覆蓋嗎？");
+          if (!ok) return;
+          send({ action: "pick", layer, position, overwrite: true });
+          return;
+        }
+
+        send({ action: "pick", layer, position, overwrite: false });
+      }
+
+      function cell(text, className) {
+        const el = document.createElement("div");
+        el.className = className;
+        el.textContent = text;
+        return el;
+      }
+
+    </script>
+  </body>
+</html>
