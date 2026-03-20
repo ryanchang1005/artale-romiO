@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import json
-import uuid
 from dataclasses import dataclass
 from typing import Any
 
@@ -12,6 +11,7 @@ from fastapi.templating import Jinja2Templates
 
 TOTAL_LAYERS = 10
 TOTAL_POSITIONS = 4
+ROOM_PASSWORD = "123456"
 
 
 DEFAULT_COLORS = {
@@ -53,6 +53,9 @@ class RoomState:
                 answer=[None for _ in range(TOTAL_LAYERS)],
             )
         return self.players[player_id]
+
+    def is_player_id_available(self, player_id: str) -> bool:
+        return player_id not in self.players
 
     def set_player_color(self, player_id: str, color: str | None) -> bool:
         player = self.ensure_player(player_id)
@@ -166,19 +169,54 @@ async def home(request: Request) -> HTMLResponse:
 @app.websocket("/ws")
 async def ws_endpoint(websocket: WebSocket) -> None:
     await manager.connect(websocket)
-    player_id = uuid.uuid4().hex[:8]
-    room_state.ensure_player(player_id)
-
-    initial_payload = room_state.to_payload()
-    initial_payload["self_id"] = player_id
-    await websocket.send_text(json.dumps(initial_payload, ensure_ascii=False))
-    await manager.broadcast_json(room_state.to_payload())
+    player_id: str | None = None
+    await websocket.send_text(
+        json.dumps({"type": "auth_required", "message": "請先輸入密碼與玩家 ID"}, ensure_ascii=False)
+    )
 
     try:
         while True:
             raw = await websocket.receive_text()
             data = json.loads(raw)
             action = data.get("action")
+
+            if action == "auth":
+                password = str(data.get("password", ""))
+                requested_id = str(data.get("player_id", "")).strip()[:8]
+
+                if password != ROOM_PASSWORD:
+                    await websocket.send_text(
+                        json.dumps({"type": "auth_error", "message": "密碼錯誤"}, ensure_ascii=False)
+                    )
+                    continue
+
+                if not requested_id:
+                    await websocket.send_text(
+                        json.dumps({"type": "auth_error", "message": "請輸入玩家 ID"}, ensure_ascii=False)
+                    )
+                    continue
+
+                if not room_state.is_player_id_available(requested_id):
+                    await websocket.send_text(
+                        json.dumps({"type": "auth_error", "message": "此 ID 已被使用"}, ensure_ascii=False)
+                    )
+                    continue
+
+                player_id = requested_id
+                room_state.ensure_player(player_id)
+
+                payload = room_state.to_payload()
+                payload["type"] = "auth_ok"
+                payload["self_id"] = player_id
+                await websocket.send_text(json.dumps(payload, ensure_ascii=False))
+                await manager.broadcast_json(room_state.to_payload())
+                continue
+
+            if not player_id:
+                await websocket.send_text(
+                    json.dumps({"type": "auth_error", "message": "請先完成登入"}, ensure_ascii=False)
+                )
+                continue
 
             if action == "set_color":
                 room_state.set_player_color(player_id=player_id, color=data.get("color"))
@@ -202,10 +240,12 @@ async def ws_endpoint(websocket: WebSocket) -> None:
                 room_state.clear_all_answers()
                 await manager.broadcast_json(room_state.to_payload())
     except (WebSocketDisconnect, RuntimeError):
-        room_state.remove_player(player_id)
+        if player_id:
+            room_state.remove_player(player_id)
         manager.disconnect(websocket)
         await manager.broadcast_json(room_state.to_payload())
     except Exception:
-        room_state.remove_player(player_id)
+        if player_id:
+            room_state.remove_player(player_id)
         manager.disconnect(websocket)
         await manager.broadcast_json(room_state.to_payload())

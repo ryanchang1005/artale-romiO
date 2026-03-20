@@ -31,6 +31,36 @@
         padding: 14px;
         margin-bottom: 12px;
       }
+      .topbar {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        margin-bottom: 10px;
+        font-size: 12px;
+        color: #cbd5e1;
+      }
+      .auth {
+        display: grid;
+        grid-template-columns: 1fr;
+        gap: 8px;
+      }
+      .auth input {
+        border-radius: 10px;
+        border: 1px solid #475569;
+        background: #0b1220;
+        color: #e5e7eb;
+        padding: 10px 12px;
+        font-size: 14px;
+      }
+      .auth button {
+        border-radius: 10px;
+        border: 1px solid #2563eb;
+        background: #2563eb;
+        color: #fff;
+        padding: 10px 12px;
+        font-size: 14px;
+        cursor: pointer;
+      }
 
       .palette {
         display: grid;
@@ -106,11 +136,24 @@
         outline-offset: 1px;
       }
       .status { color: var(--muted); font-size: 12px; margin-top: 8px; }
+      .hidden { display: none; }
     </style>
   </head>
   <body>
     <div class="wrap">
+      <div class="card" id="auth-card">
+        <div class="auth">
+          <input id="password" type="password" placeholder="密碼" />
+          <input id="player-id" maxlength="8" placeholder="玩家 ID（最多 8 字）" />
+          <button id="login" type="button">進入</button>
+        </div>
+      </div>
+
       <div class="card">
+        <div class="topbar">
+          <div id="online">在線：0</div>
+          <div id="my-id">ID：-</div>
+        </div>
         <div class="palette" id="palette"></div>
         <button class="danger" id="clear" type="button">清空</button>
         <div class="status" id="status">連線中...</div>
@@ -125,6 +168,12 @@
       const statusEl = document.getElementById("status");
       const boardEl = document.getElementById("board");
       const paletteEl = document.getElementById("palette");
+      const authCardEl = document.getElementById("auth-card");
+      const onlineEl = document.getElementById("online");
+      const myIdEl = document.getElementById("my-id");
+      const passwordEl = document.getElementById("password");
+      const playerIdEl = document.getElementById("player-id");
+      const loginBtnEl = document.getElementById("login");
 
       const COLORS = [
         "#ef4444",
@@ -142,12 +191,13 @@
       let myAnswer = Array(10).fill(null);
       let latestBoard = [];
       let latestPlayers = [];
+      let isAuthed = false;
 
       const wsProtocol = location.protocol === "https:" ? "wss" : "ws";
       const ws = new WebSocket(`${wsProtocol}://${location.host}/ws`);
 
       ws.onopen = () => {
-        statusEl.textContent = "已連線，資料會即時同步";
+        statusEl.textContent = "請先輸入密碼與 ID";
       };
 
       ws.onclose = () => {
@@ -160,9 +210,23 @@
 
       ws.onmessage = (event) => {
         const payload = JSON.parse(event.data);
-        if (payload.self_id) {
-          selfId = payload.self_id;
+
+        if (payload.type === "auth_error") {
+          alert(payload.message || "驗證失敗");
+          return;
         }
+
+        if (payload.type === "auth_ok") {
+          selfId = payload.self_id;
+          isAuthed = true;
+          authCardEl.classList.add("hidden");
+          myIdEl.textContent = `ID：${selfId}`;
+        }
+
+        if (payload.type === "auth_required") {
+          return;
+        }
+
         render(payload);
       };
 
@@ -172,19 +236,37 @@
       }
 
       document.getElementById("clear").addEventListener("click", () => {
+        if (!isAuthed) return;
         const ok = confirm("確定要清空所有人的所有答案嗎？");
         if (!ok) return;
         send({ action: "clear" });
+      });
+
+      loginBtnEl.addEventListener("click", () => {
+        const password = passwordEl.value || "";
+        const playerId = (playerIdEl.value || "").trim().slice(0, 8);
+        if (!password) {
+          alert("請輸入密碼");
+          return;
+        }
+        if (!playerId) {
+          alert("請輸入玩家 ID");
+          return;
+        }
+
+        send({ action: "auth", password, player_id: playerId });
       });
 
       function render(payload) {
         const players = payload.players || [];
         latestPlayers = players;
         latestBoard = payload.board || [];
+        onlineEl.textContent = `在線：${players.length}`;
         const me = players.find((p) => p.id === selfId);
         if (me) {
           selectedColor = me.color || null;
           myAnswer = me.answer || Array(10).fill(null);
+          myIdEl.textContent = `ID：${me.id}`;
         }
 
         renderPalette();
@@ -195,13 +277,13 @@
         paletteEl.innerHTML = "";
         for (const color of COLORS) {
           const owner = latestPlayers.find((p) => p.color === color);
-          const disabled = Boolean(owner && owner.id !== selfId);
+          const disabled = !isAuthed || Boolean(owner && owner.id !== selfId);
           const btn = document.createElement("button");
           btn.type = "button";
           btn.className = `color-btn ${selectedColor === color ? "active" : ""}`;
           btn.style.background = color;
           btn.disabled = disabled;
-          btn.textContent = disabled ? "被選擇" : "";
+          btn.textContent = owner ? owner.id : "";
           btn.addEventListener("click", () => {
             if (disabled) return;
             selectedColor = color;
@@ -252,6 +334,11 @@
       }
 
       function handlePick(layer, position) {
+        if (!isAuthed) {
+          alert("請先登入");
+          return;
+        }
+
         if (!selectedColor) {
           alert("請先選擇顏色");
           return;
